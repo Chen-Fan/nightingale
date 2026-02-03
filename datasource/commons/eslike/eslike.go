@@ -565,32 +565,12 @@ func QueryData(ctx context.Context, queryParam interface{}, cliTimeout int64, ve
 		return nil, err
 	}
 
-	// 检查是否有 shard failures
-	if result.Shards != nil && result.Shards.Failed > 0 && len(result.Shards.Failures) > 0 {
-		var failureReasons []string
-		for _, failure := range result.Shards.Failures {
-			reason := ""
-			if failure.Reason != nil {
-				if reasonType, ok := failure.Reason["type"].(string); ok {
-					reason = reasonType
-				}
-				if reasonMsg, ok := failure.Reason["reason"].(string); ok {
-					if reason != "" {
-						reason += ": " + reasonMsg
-					} else {
-						reason = reasonMsg
-					}
-				}
-			}
-			if reason != "" {
-				failureReasons = append(failureReasons, fmt.Sprintf("index=%s shard=%d: %s", failure.Index, failure.Shard, reason))
-			}
+	// 检查是否有 shard failures，有部分数据时仅记录警告继续处理
+	if shardErr := checkShardFailures(result.Shards, "query_data", searchSourceString); shardErr != nil {
+		if len(result.Aggregations["ts"]) == 0 {
+			return nil, shardErr
 		}
-		if len(failureReasons) > 0 {
-			errMsg := fmt.Sprintf("elasticsearch shard failures (%d/%d failed): %s", result.Shards.Failed, result.Shards.Total, strings.Join(failureReasons, "; "))
-			logger.Warningf("query_data searchSource:%s %s", searchSourceString, errMsg)
-			return nil, fmt.Errorf("%s", errMsg)
-		}
+		// 有部分数据，checkShardFailures 已记录警告，继续处理
 	}
 
 	logger.Debugf("query_data searchSource:%s resp:%s", string(jsonSearchSource), string(result.Aggregations["ts"]))
@@ -628,6 +608,40 @@ func QueryData(ctx context.Context, queryParam interface{}, cliTimeout int64, ve
 		items[i].Query = fmt.Sprintf("%+v", m)
 	}
 	return items, nil
+}
+
+// checkShardFailures 检查 ES 查询结果中的 shard failures，返回格式化的错误信息
+func checkShardFailures(shards *elastic.ShardsInfo, logPrefix string, queryContext interface{}) error {
+	if shards == nil || shards.Failed == 0 || len(shards.Failures) == 0 {
+		return nil
+	}
+
+	var failureReasons []string
+	for _, failure := range shards.Failures {
+		reason := ""
+		if failure.Reason != nil {
+			if reasonType, ok := failure.Reason["type"].(string); ok {
+				reason = reasonType
+			}
+			if reasonMsg, ok := failure.Reason["reason"].(string); ok {
+				if reason != "" {
+					reason += ": " + reasonMsg
+				} else {
+					reason = reasonMsg
+				}
+			}
+		}
+		if reason != "" {
+			failureReasons = append(failureReasons, fmt.Sprintf("index=%s shard=%d: %s", failure.Index, failure.Shard, reason))
+		}
+	}
+
+	if len(failureReasons) > 0 {
+		errMsg := fmt.Sprintf("elasticsearch shard failures (%d/%d failed): %s", shards.Failed, shards.Total, strings.Join(failureReasons, "; "))
+		logger.Warningf("%s query:%v %s", logPrefix, queryContext, errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+	return nil
 }
 
 func HitFilter(typ string) bool {
@@ -706,49 +720,27 @@ func QueryLog(ctx context.Context, queryParam interface{}, timeout int64, versio
 	} else {
 		source = source.From(param.P).Sort(param.DateField, param.Ascending)
 	}
+	sourceBytes, _ := json.Marshal(source)
 	result, err := search(ctx, indexArr, source, param.Timeout, param.MaxShard)
 	if err != nil {
-		logger.Warningf("query data error:%v", err)
+		logger.Warningf("query_log source:%s error:%v", string(sourceBytes), err)
 		return nil, 0, err
 	}
 
-	// 检查是否有 shard failures
-	if result.Shards != nil && result.Shards.Failed > 0 && len(result.Shards.Failures) > 0 {
-		var failureReasons []string
-		for _, failure := range result.Shards.Failures {
-			reason := ""
-			if failure.Reason != nil {
-				if reasonType, ok := failure.Reason["type"].(string); ok {
-					reason = reasonType
-				}
-				if reasonMsg, ok := failure.Reason["reason"].(string); ok {
-					if reason != "" {
-						reason += ": " + reasonMsg
-					} else {
-						reason = reasonMsg
-					}
-				}
-			}
-			if reason != "" {
-				failureReasons = append(failureReasons, fmt.Sprintf("index=%s shard=%d: %s", failure.Index, failure.Shard, reason))
-			}
+	// 检查是否有 shard failures，有部分数据时仅记录警告继续处理
+	if shardErr := checkShardFailures(result.Shards, "query_log", string(sourceBytes)); shardErr != nil {
+		if len(result.Hits.Hits) == 0 {
+			return nil, 0, shardErr
 		}
-		if len(failureReasons) > 0 {
-			errMsg := fmt.Sprintf("elasticsearch shard failures (%d/%d failed): %s", result.Shards.Failed, result.Shards.Total, strings.Join(failureReasons, "; "))
-			logger.Warningf("query_log %s", errMsg)
-			return nil, 0, fmt.Errorf("%s", errMsg)
-		}
+		// 有部分数据，checkShardFailures 已记录警告，继续处理
 	}
 
 	total := result.TotalHits()
-
 	var ret []interface{}
-
-	b, _ := json.Marshal(source)
-	logger.Debugf("query data result query source:%s len:%d total:%d", string(b), len(result.Hits.Hits), total)
+	logger.Debugf("query_log source:%s len:%d total:%d", string(sourceBytes), len(result.Hits.Hits), total)
 
 	resultBytes, _ := json.Marshal(result)
-	logger.Debugf("query data result query source:%s result:%s", string(b), string(resultBytes))
+	logger.Debugf("query_log source:%s result:%s", string(sourceBytes), string(resultBytes))
 
 	if strings.HasPrefix(version, "6") {
 		for i := 0; i < len(result.Hits.Hits); i++ {
