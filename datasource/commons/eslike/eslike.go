@@ -565,6 +565,34 @@ func QueryData(ctx context.Context, queryParam interface{}, cliTimeout int64, ve
 		return nil, err
 	}
 
+	// 检查是否有 shard failures
+	if result.Shards != nil && result.Shards.Failed > 0 && len(result.Shards.Failures) > 0 {
+		var failureReasons []string
+		for _, failure := range result.Shards.Failures {
+			reason := ""
+			if failure.Reason != nil {
+				if reasonType, ok := failure.Reason["type"].(string); ok {
+					reason = reasonType
+				}
+				if reasonMsg, ok := failure.Reason["reason"].(string); ok {
+					if reason != "" {
+						reason += ": " + reasonMsg
+					} else {
+						reason = reasonMsg
+					}
+				}
+			}
+			if reason != "" {
+				failureReasons = append(failureReasons, fmt.Sprintf("index=%s shard=%d: %s", failure.Index, failure.Shard, reason))
+			}
+		}
+		if len(failureReasons) > 0 {
+			errMsg := fmt.Sprintf("elasticsearch shard failures (%d/%d failed): %s", result.Shards.Failed, result.Shards.Total, strings.Join(failureReasons, "; "))
+			logger.Warningf("query_data searchSource:%s %s", searchSourceString, errMsg)
+			return nil, fmt.Errorf("%s", errMsg)
+		}
+	}
+
 	logger.Debugf("query_data searchSource:%s resp:%s", string(jsonSearchSource), string(result.Aggregations["ts"]))
 
 	js, err := simplejson.NewJson(result.Aggregations["ts"])
@@ -682,6 +710,34 @@ func QueryLog(ctx context.Context, queryParam interface{}, timeout int64, versio
 	if err != nil {
 		logger.Warningf("query data error:%v", err)
 		return nil, 0, err
+	}
+
+	// 检查是否有 shard failures
+	if result.Shards != nil && result.Shards.Failed > 0 && len(result.Shards.Failures) > 0 {
+		var failureReasons []string
+		for _, failure := range result.Shards.Failures {
+			reason := ""
+			if failure.Reason != nil {
+				if reasonType, ok := failure.Reason["type"].(string); ok {
+					reason = reasonType
+				}
+				if reasonMsg, ok := failure.Reason["reason"].(string); ok {
+					if reason != "" {
+						reason += ": " + reasonMsg
+					} else {
+						reason = reasonMsg
+					}
+				}
+			}
+			if reason != "" {
+				failureReasons = append(failureReasons, fmt.Sprintf("index=%s shard=%d: %s", failure.Index, failure.Shard, reason))
+			}
+		}
+		if len(failureReasons) > 0 {
+			errMsg := fmt.Sprintf("elasticsearch shard failures (%d/%d failed): %s", result.Shards.Failed, result.Shards.Total, strings.Join(failureReasons, "; "))
+			logger.Warningf("query_log %s", errMsg)
+			return nil, 0, fmt.Errorf("%s", errMsg)
+		}
 	}
 
 	total := result.TotalHits()
