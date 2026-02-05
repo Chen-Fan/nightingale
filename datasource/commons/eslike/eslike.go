@@ -390,8 +390,8 @@ func QueryData(ctx context.Context, queryParam interface{}, cliTimeout int64, ve
 	now := time.Now().Unix()
 	var start, end int64
 	if param.End != 0 && param.Start != 0 {
-		end = param.End - param.End%param.Interval
-		start = param.Start - param.Start%param.Interval
+		end = param.End
+		start = param.Start
 	} else {
 		end = now
 		start = end - param.Interval
